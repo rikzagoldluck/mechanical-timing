@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>MQTT Browser Client</title>
+    <script src="mqtt.js"></script>
+    <link href="/assets/css/bootstrap.min.css" rel="stylesheet" />
+  </head>
+  <body>
+    <div class="container-fluid">
+      <div class="row mx-auto mt-2 gy-4">
+        <div
+          class="col-12 col-md-6 d-flex justify-content-center flex-column align-items-center"
+        >
+          <div
+            id="display"
+            class="mx-auto fs-1 fw-bold"
+            style="font-size: 5rem !important"
+          >
+            00:00:00.000
+          </div>
+
+          <div id="buttons" class="mx-auto my-3">
+            <button
+              id="startStopButton"
+              class="btn shadow-lg btn-primary"
+              onclick="startStop()"
+            >
+              START
+            </button>
+            <button class="btn shadow-lg btn-danger" onclick="reset()">
+              RESET
+            </button>
+          </div>
+          <!-- <table class="table shadow bg-body rounded-4">
+          <thead>
+            <tr>
+              <th>Peserta</th>
+              <th>Waktu</th>
+            </tr>
+          </thead>
+          <tbody id="valuesBody" class="table-group-divider">
+          </tbody>
+        </table> -->
+          <h3>Starting Line Up</h3>
+          <select
+            class="form-select mb-3"
+            aria-label="Default select example"
+            id="heat"
+          >
+            <option selected>Pilih heat</option>
+            <option value="1">Heat 1</option>
+            <option value="2">Heat 2</option>
+            <option value="3">Heat 3</option>
+          </select>
+
+          <table class="table shadow rounded-4">
+            <thead>
+              <tr>
+                <th scope="col" class="text-center">Start Pos</th>
+                <th scope="col">BIB</th>
+                <th scope="col">Nama</th>
+                <th scope="col">Tim</th>
+                <th scope="col" hidden>Waktu</th>
+              </tr>
+            </thead>
+            <tbody class="table-group-divider" id="table-peserta"></tbody>
+          </table>
+        </div>
+        <!-- <div class="col-12 col-md-6 d-flex flex-column align-items-center">
+          
+        </div> -->
+
+        <div class="col-12 col-md-6 d-flex flex-column align-items-center">
+          <select
+            class="form-select mb-3"
+            aria-label="Default select example"
+            id="kategori"
+          ></select>
+          <button type="button" class="btn btn-primary" id="sort">Sort</button>
+          <h3>Race Result</h3>
+          <table
+            class="table shadow bg-body rounded-4"
+            id="table-pemenang-parent"
+          >
+            <thead>
+              <tr>
+                <th scope="col" hidden>Start Pos</th>
+                <th scope="col" class="text-center">Pos</th>
+                <th scope="col">BIB</th>
+                <th scope="col">Nama</th>
+                <th scope="col">Tim</th>
+                <th scope="col">Waktu</th>
+              </tr>
+            </thead>
+            <tbody class="table-group-divider" id="table-pemenang"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <script src="assets/js/bootstrap.bundle.min.js"></script>
+    <script src="assets/js/popper.min.js"></script>
+    <script src="assets/js/bootstrap.min.js"></script>
+    <script src="assets/js/sweetalert2@11.js"></script>
+
+    <script>
+      const brokerUrl = "ws://192.168.43.18:9001";
+
+      const topic = "tombol";
+      const timeoutDuration = 10 * 1000;
+
+      let lastReceivedValue = null;
+      let lastReceivedTime = 0;
+
+      const client = mqtt.connect(brokerUrl);
+
+      client.on("connect", () => {
+        console.log("Connected to MQTT broker");
+        client.subscribe(topic, (err) => {
+          if (!err) {
+            console.log(`Subscribed to ${topic}`);
+          } else {
+            console.error("Error subscribing to topic:", err);
+          }
+        });
+      });
+      const lastReceivedValues = {};
+
+      client.on("message", (receivedTopic, message) => {
+        if (document.getElementById("display").innerText === "00:00:00.000") {
+          Swal.fire("Pertandingan belum dimulai!");
+          return;
+        }
+        const receivedValue = message.toString();
+        // Periksa apakah nilai sudah ada dalam lastReceivedValues
+        const lastReceivedTime = lastReceivedValues[receivedValue];
+
+        if (
+          !lastReceivedTime ||
+          Date.now() - lastReceivedTime >= timeoutDuration
+        ) {
+          // Lakukan apa yang perlu dilakukan dengan nilai yang baru diterima
+          searchAndDisplay(receivedValue);
+
+          // Tambahkan nilai baru ke array previousValues
+          lastReceivedValues[receivedValue] = Date.now();
+        } else {
+          // Jika nilai sudah ada atau timeout belum berakhir, log pesan
+          console.log("Duplicate value or timeout not expired. Ignoring.");
+        }
+      });
+
+      client.on("error", (err) => {
+        console.error("MQTT error:", err);
+        Swal.fire({
+          icon: "error",
+          title: "Oops...",
+          text: "Terjadi Kesalahan : " + err,
+        });
+      });
+
+      document.addEventListener("DOMContentLoaded", () => {
+        fetchData();
+        Swal.fire({
+          title: "Mohon Tunggu...",
+          allowEscapeKey: false,
+          allowOutsideClick: false,
+          didOpen: () => {
+            Swal.showLoading();
+          },
+        });
+      });
+      const searchResultsBody = document.getElementById("table-pemenang");
+
+      let resultCount = 0;
+      function searchAndDisplay(searchInput) {
+        const dataTable = document.getElementById("table-peserta");
+        const searchColumnIndex = 0; // Kolom ke-2 (index dimulai dari 0) adalah kolom "Name"
+        const additionalInfoColumnIndex = 4; // Kolom ke-5 (index dimulai dari 0) adalah kolom "Additional Info"
+
+        const dataRows = dataTable.getElementsByTagName("tr");
+
+        // Clear existing search results
+        Array.from(dataRows).forEach((row, index) => {
+          const rowData =
+            row.children[searchColumnIndex].textContent.toLowerCase();
+
+          // Check if the search input matches the specified column in the current row
+          if (rowData.includes(searchInput)) {
+            resultCount++;
+            const newRow = document.createElement("tr");
+            const indexCell = document.createElement("td");
+            indexCell.textContent = resultCount;
+            newRow.appendChild(indexCell);
+
+            // Loop through columns starting from the second column
+            for (
+              let cellIndex = 1;
+              cellIndex < row.children.length;
+              cellIndex++
+            ) {
+              const cell = row.children[cellIndex];
+              const newCell = document.createElement("td");
+
+              // For Additional Info column, get the value from <p> element
+              if (cellIndex === additionalInfoColumnIndex) {
+                const additionalInfoValue =
+                  document.getElementById("display").textContent;
+                newCell.textContent = additionalInfoValue;
+              } else {
+                newCell.textContent = cell.textContent;
+              }
+
+              newRow.appendChild(newCell);
+            }
+
+            searchResultsBody.appendChild(newRow);
+          }
+        });
+      }
+
+      document.getElementById("sort").addEventListener("click", function () {
+        sortTable(4);
+      });
+
+      function sortTable(columnIndex) {
+        const table = document.getElementById("table-pemenang-parent");
+        const tbody = table.querySelector("tbody");
+        const rows = Array.from(tbody.getElementsByTagName("tr"));
+        const isAscending =
+          !table.rows[0].cells[columnIndex].classList.contains("asc");
+
+        // Remove the "asc" and "desc" classes from all columns
+        Array.from(table.getElementsByTagName("th")).forEach((cell) => {
+          cell.classList.remove("asc", "desc");
+        });
+
+        // Add the appropriate class to the clicked column header
+        table.rows[0].cells[columnIndex].classList.add(
+          isAscending ? "asc" : "desc"
+        );
+
+        // Sort the rows based on the time values in the specified column
+        rows.sort((a, b) => {
+          const aValue = a.cells[columnIndex].textContent;
+          const bValue = b.cells[columnIndex].textContent;
+
+          return isAscending
+            ? compareTimes(aValue, bValue)
+            : compareTimes(bValue, aValue);
+        });
+
+        // Remove existing rows from the tbody
+        rows.forEach((row) => tbody.removeChild(row));
+
+        // Append sorted rows to the tbody
+        rows.forEach((row) => tbody.appendChild(row));
+      }
+      function compareTimes(time1, time2) {
+        const [h1, m1, s1] = time1.split(":").map(Number);
+        const [h2, m2, s2] = time2.split(":").map(Number);
+
+        if (h1 !== h2) return h1 - h2;
+        if (m1 !== m2) return m1 - m2;
+        if (s1 !== s2) return s1 - s2;
+
+        return 0; // Times are equal
+      }
+
+      async function fetchData() {
+        try {
+          const response = await fetch("http://localhost:3000/api/peserta");
+          const data = await response.json();
+          updateTable(data);
+
+          const allKategori = await fetch("http://localhost:3000/api/kategori");
+          const responseKategori = await allKategori.json();
+          updateSelectKategori(responseKategori);
+        } catch (error) {
+          console.error("Error fetching data:", error);
+          Swal.fire({
+            icon: "error",
+            title: "Oops...",
+            text: "Terjadi Kesalahan : " + error,
+          });
+        } finally {
+          Swal.close();
+        }
+      }
+
+      function updateTable(data) {
+        const tablePeserta = document.getElementById("table-peserta");
+
+        // Clear existing rows
+        tablePeserta.innerHTML = "";
+
+        // Populate table with new data
+        data.forEach((item, index) => {
+          const row = document.createElement("tr");
+          row.innerHTML = `<td class="text-center fw-bold">${item.start_pos}</td><td>${item.bib}</td><td>${item.nama}</td><td>${item.tim}</td><td hidden>${item.tim}</td>`;
+          tablePeserta.appendChild(row);
+        });
+      }
+      const selectKategori = document.getElementById("kategori");
+
+      function updateSelectKategori(data) {
+        // Clear existing rows
+        let option;
+
+        option = document.createElement("option");
+        option.text = "Pilih Kategori";
+        option.value = "";
+        option.selected = true;
+        selectKategori.add(option);
+
+        // Populate table with new data
+        data.forEach((item, index) => {
+          let option;
+
+          option = document.createElement("option");
+          option.text = item.nama;
+          option.value = item.id;
+          selectKategori.add(option);
+        });
+      }
+
+      const selectHeat = document.getElementById("heat");
+
+      heat.addEventListener("change", async function (e) {
+        let heat = e.target.value;
+        let kategori = selectKategori.value;
+        try {
+          const response = await fetch(
+            `http://localhost:3000/api/peserta/${kategori}/${heat}`
+          );
+          const data = await response.json();
+          updateTable(data);
+        } catch (error) {
+          console.error("Error fetching data:", error);
+          Swal.fire({
+            icon: "error",
+            title: "Oops...",
+            text: "Terjadi Kesalahan : " + error,
+          });
+        }
+      });
+
+      // Function to reset the ta ble after timeoutDuration
+      function resetTable() {
+        const tableBody = document.getElementById("table-pemenang");
+        tableBody.innerHTML = ""; // Clear the table content
+      }
+
+      // Set timeout to reset the table
+      //setTimeout(() => {
+      //  resetTable();
+      //}, timeoutDuration);
+
+      let timer;
+      let isRunning = false;
+      let milliseconds = 0;
+      let seconds = 0;
+      let minutes = 0;
+      let hours = 0;
+
+      function startStop() {
+        if (isRunning) {
+          clearInterval(timer);
+          isRunning = false;
+          document.getElementById("startStopButton").textContent = "START";
+        } else {
+          timer = setInterval(updateTime, 10); // update every 10 milliseconds
+          isRunning = true;
+          document.getElementById("startStopButton").textContent = "STOP";
+        }
+      }
+
+      function reset() {
+        clearInterval(timer);
+        isRunning = false;
+        milliseconds = 0;
+        seconds = 0;
+        minutes = 0;
+        hours = 0;
+        document.getElementById("startStopButton").textContent = "START";
+        updateDisplay();
+      }
+
+      function updateTime() {
+        milliseconds += 10;
+        if (milliseconds === 1000) {
+          milliseconds = 0;
+          seconds++;
+          if (seconds === 60) {
+            seconds = 0;
+            minutes++;
+            if (minutes === 60) {
+              minutes = 0;
+              hours++;
+            }
+          }
+        }
+        updateDisplay();
+      }
+
+      function updateDisplay() {
+        const display = document.getElementById("display");
+        display.textContent = `${pad(hours)}:${pad(minutes)}:${pad(
+          seconds
+        )}.${padMilliseconds(milliseconds)}`;
+      }
+
+      function pad(value) {
+        return value < 10 ? `0${value}` : value;
+      }
+
+      function padMilliseconds(value) {
+        return value < 100 ? (value < 10 ? `00${value}` : `0${value}`) : value;
+      }
+    </script>
+  </body>
+</html>
